@@ -1,0 +1,68 @@
+import pandas as pd
+import os
+
+# Database of 40 medical datasets
+data = [
+    # Dermoscopy
+    ("HAM10000", "Dermoscopy", 7, 10015, "Dermoscopy", "https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000", "kaggle datasets download kmader/skin-cancer-mnist-ham10000", True, "CC BY-NC 4.0", "Highly Imbalanced", 60.0),
+    ("ISIC_2019", "Dermoscopy", 8, 25331, "Dermoscopy", "https://www.kaggle.com/datasets/nodoubttome/isic-2019", "kaggle datasets download nodoubttome/isic-2019", True, "CC BY-NC 4.0", "Imbalanced", 50.0),
+    ("ISIC_2020", "Dermoscopy", 2, 33126, "Dermoscopy", "https://www.kaggle.com/datasets/cdeotte/jpeg-melanoma-256x256", "kaggle datasets download cdeotte/jpeg-melanoma-256x256", True, "CC BY-NC 4.0", "Highly Imbalanced", 98.0),
+    ("PAD_UFES_20", "Dermoscopy", 6, 2298, "Clinical", "https://data.mendeley.com/datasets/zr7vgbcyr2/1", "wget -O pad_ufes.zip https://data.mendeley.com/public-files/datasets/zr7vgbcyr2/files/...", False, "CC BY 4.0", "Imbalanced", 20.0),
+    ("DDI", "Dermoscopy", 78, 656, "Clinical", "https://ddi-dataset.github.io/", "Manual Download Required", False, "Custom", "Extremely Imbalanced", 100.0),
+
+    # X-ray
+    ("ChestX-ray14", "Radiography", 14, 112120, "X-ray", "https://www.kaggle.com/datasets/nih-chest-xrays/data", "kaggle datasets download nih-chest-xrays/data", True, "Public Domain", "Imbalanced", 30.0),
+    ("CheXpert", "Radiography", 14, 224316, "X-ray", "https://stanfordmlgroup.github.io/competitions/chexpert/", "Manual Download Required", False, "Custom", "Imbalanced", 25.0),
+    ("COVID-19_Radiography", "Radiography", 4, 21165, "X-ray", "https://www.kaggle.com/datasets/tawsifurrahman/covid19-radiography-database", "kaggle datasets download tawsifurrahman/covid19-radiography-database", True, "Public Domain", "Imbalanced", 10.0),
+    ("RSNA_Pneumonia", "Radiography", 2, 26684, "X-ray", "https://www.kaggle.com/competitions/rsna-pneumonia-detection-challenge", "kaggle competitions download -c rsna-pneumonia-detection-challenge", True, "Custom", "Balanced", 1.5),
+    ("BIMCV_COVID19", "Radiography", 3, 23000, "X-ray", "https://bimcv.cipf.es/bimcv-projects/bimcv-covid19/", "Manual Download Required", False, "Custom", "Imbalanced", 15.0),
+    ("TB_Chest_Xray", "Radiography", 2, 4200, "X-ray", "https://www.kaggle.com/datasets/tawsifurrahman/tuberculosis-tb-chest-xray-dataset", "kaggle datasets download tawsifurrahman/tuberculosis-tb-chest-xray-dataset", True, "Public", "Imbalanced", 4.0),
+    ("MIMIC-CXR", "Radiography", 14, 377110, "X-ray", "https://physionet.org/content/mimic-cxr-jpg/2.0.0/", "PhysioNet Credential Required", False, "Custom", "Highly Imbalanced", 50.0),
+    ("VinDr-CXR", "Radiography", 22, 18000, "X-ray", "https://www.kaggle.com/c/vinbigdata-chest-xray-abnormalities-detection", "kaggle competitions download -c vinbigdata-chest-xray-abnormalities-detection", True, "Custom", "Highly Imbalanced", 60.0),
+
+    # Histopathology
+    ("BreakHis", "Histopathology", 8, 7909, "Microscopy", "https://www.kaggle.com/datasets/ambarish/breakhis", "kaggle datasets download ambarish/breakhis", True, "Custom", "Imbalanced", 3.0),
+    ("PCam", "Histopathology", 2, 327680, "Microscopy", "https://www.kaggle.com/c/histopathologic-cancer-detection", "kaggle competitions download -c histopathologic-cancer-detection", True, "MIT", "Balanced", 1.0),
+    ("NCT-CRC-HE-100K", "Histopathology", 9, 100000, "Microscopy", "https://www.kaggle.com/datasets/kmader/colorectal-histology-mnist", "kaggle datasets download kmader/colorectal-histology-mnist", True, "CC BY 4.0", "Balanced", 1.2),
+    ("Camelyon16", "Histopathology", 2, 400, "WSI", "https://camelyon16.grand-challenge.org/Data/", "Manual Download Required", False, "Custom", "Balanced", 1.0),
+    ("Camelyon17", "Histopathology", 2, 1000, "WSI", "https://camelyon17.grand-challenge.org/Data/", "Manual Download Required", False, "Custom", "Imbalanced", 2.0),
+    ("PANDA_Challenge", "Histopathology", 6, 10616, "WSI", "https://www.kaggle.com/c/prostate-cancer-grade-assessment", "kaggle competitions download -c prostate-cancer-grade-assessment", True, "Custom", "Imbalanced", 4.0),
+
+    # Retinal Imaging
+    ("APTOS_2019", "Retinal", 5, 3662, "Fundus", "https://www.kaggle.com/c/aptos2019-blindness-detection", "kaggle competitions download -c aptos2019-blindness-detection", True, "Custom", "Highly Imbalanced", 10.0),
+    ("EyePACS", "Retinal", 5, 35126, "Fundus", "https://www.kaggle.com/c/diabetic-retinopathy-detection", "kaggle competitions download -c diabetic-retinopathy-detection", True, "Custom", "Highly Imbalanced", 30.0),
+    ("MESSIDOR-2", "Retinal", 5, 1748, "Fundus", "http://www.adcis.net/en/third-party/messidor/", "Manual Download Required", False, "Custom", "Imbalanced", 8.0),
+    ("STARE", "Retinal", 2, 400, "Fundus", "https://cecas.clemson.edu/~ahoover/stare/", "Manual Download Required", False, "Custom", "Imbalanced", 5.0),
+    ("IDRiD", "Retinal", 4, 516, "Fundus", "https://ieee-dataport.org/open-access/indian-diabetic-retinopathy-image-dataset-idrid", "Manual Download Required", False, "CC BY 4.0", "Imbalanced", 6.0),
+    ("ODIR-5K", "Retinal", 8, 5000, "Fundus", "https://www.kaggle.com/datasets/andrewmvd/ocular-disease-recognition-odir5k", "kaggle datasets download andrewmvd/ocular-disease-recognition-odir5k", True, "Custom", "Imbalanced", 12.0),
+
+    # MRI / CT / Brain
+    ("BraTS_2020", "Neuroimaging", 4, 369, "MRI", "https://www.kaggle.com/datasets/awsaf49/brats20-dataset-training-validation", "kaggle datasets download awsaf49/brats20-dataset-training-validation", True, "Custom", "Imbalanced", 3.0),
+    ("OASIS", "Neuroimaging", 4, 416, "MRI", "https://www.kaggle.com/datasets/jboysen/mri-and-alzheimers", "kaggle datasets download jboysen/mri-and-alzheimers", True, "Custom", "Imbalanced", 2.5),
+    ("FastMRI_Knee", "Musculoskeletal", 2, 10000, "MRI", "https://fastmri.med.nyu.edu/", "Manual Download Required", False, "Custom", "Imbalanced", 4.0),
+    ("CT_Medical_Images", "Oncology", 2, 475, "CT", "https://www.kaggle.com/datasets/kmader/siim-medical-image-analysis-tutorial", "kaggle datasets download kmader/siim-medical-image-analysis-tutorial", True, "Custom", "Imbalanced", 2.0),
+    ("LIDC-IDRI", "Oncology", 4, 1018, "CT", "https://wiki.cancerimagingarchive.net/display/Public/LIDC-IDRI", "Manual Download Required", False, "Custom", "Imbalanced", 5.0),
+    ("RSNA_Intracranial", "Neuroimaging", 6, 874036, "CT", "https://www.kaggle.com/c/rsna-intracranial-hemorrhage-detection", "kaggle competitions download -c rsna-intracranial-hemorrhage-detection", True, "Custom", "Highly Imbalanced", 20.0),
+
+    # Ultrasound / Endoscopy / GI
+    ("Kvasir", "Endoscopy", 8, 8000, "Endoscopy", "https://www.kaggle.com/datasets/meetnagadia/kvasir-dataset", "kaggle datasets download meetnagadia/kvasir-dataset", True, "Custom", "Balanced", 1.0),
+    ("HyperKvasir", "Endoscopy", 23, 110079, "Endoscopy", "https://datasets.simula.no/hyper-kvasir/", "wget -O hyperkvasir.zip https://datasets.simula.no/downloads/hyper-kvasir.zip", False, "Custom", "Highly Imbalanced", 50.0),
+    ("BUSI", "Oncology", 3, 780, "Ultrasound", "https://www.kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset", "kaggle datasets download aryashah2k/breast-ultrasound-images-dataset", True, "Custom", "Imbalanced", 3.0),
+    ("Cervical_Cancer_Intel", "Oncology", 3, 8222, "Clinical", "https://www.kaggle.com/c/intel-mobileodt-cervical-cancer-screening", "kaggle competitions download -c intel-mobileodt-cervical-cancer-screening", True, "Custom", "Imbalanced", 4.0),
+    ("PolypGen", "Endoscopy", 2, 3142, "Endoscopy", "https://www.kaggle.com/datasets/debeshjha/polypgen", "kaggle datasets download debeshjha/polypgen", True, "Custom", "Imbalanced", 2.0),
+
+    # Others
+    ("Blood_Cell_Detection", "Hematology", 4, 12500, "Microscopy", "https://www.kaggle.com/datasets/paultimothymooney/blood-cells", "kaggle datasets download paultimothymooney/blood-cells", True, "Custom", "Imbalanced", 2.0),
+    ("Malaria_Cell", "Hematology", 2, 27558, "Microscopy", "https://www.kaggle.com/datasets/iarunava/cell-images-for-detecting-malaria", "kaggle datasets download iarunava/cell-images-for-detecting-malaria", True, "Public", "Balanced", 1.0),
+    ("Bone_Age_RSNA", "Musculoskeletal", 2, 12611, "X-ray", "https://www.kaggle.com/datasets/kmader/rsna-bone-age", "kaggle datasets download kmader/rsna-bone-age", True, "Custom", "Imbalanced", 5.0),
+    ("MURA", "Musculoskeletal", 2, 40561, "X-ray", "https://stanfordmlgroup.github.io/competitions/mura/", "Manual Download Required", False, "Custom", "Imbalanced", 2.0)
+]
+
+columns = [
+    "Dataset Name", "Domain", "Number of Classes", "Number of Samples", "Modality", 
+    "Dataset URL", "Download Method", "Kaggle Availability", "License", "Class Distribution", "Imbalance Ratio"
+]
+
+df = pd.DataFrame(data, columns=columns)
+df.to_csv(r"d:\new imbalance\datasets.csv", index=False)
+print(f"Generated datasets.csv with {len(df)} datasets.")
