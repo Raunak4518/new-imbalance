@@ -34,8 +34,8 @@ DOWNLOAD_CMD   = """{{DOWNLOAD_CMD}}"""
 NUM_CLASSES    = {{NUM_CLASSES}}
 SEED           = 42
 IMG_SIZE       = 224
-BATCH_SIZE     = 16 * max(1, torch.cuda.device_count()) # Scale batch size with GPUs
-NUM_WORKERS    = 4
+BATCH_SIZE     = 8 * max(1, torch.cuda.device_count())  # Kaggle-safe: 8 per GPU to avoid OOM
+NUM_WORKERS    = 2
 ENCODER_DIM    = 512
 LATENT_DIM     = 128
 LR             = 3e-4
@@ -126,14 +126,59 @@ if not DATASET_PATH:
             print("Data already found locally.")
 
 # ── 2. DATA LOADING & SAMPLING ─────────────────────────────────────────────
-# Find the directory containing the actual images
+# Find the best img_root: prefer a directory whose subdirectories each contain
+# images (ImageFolder layout) over a flat directory of unlabelled images.
 img_root = DATASET_PATH
 image_files = []
+best_flat_root = DATASET_PATH
+best_flat_count = 0
+best_clf_root = None     # directory whose subdirs contain images (class dirs)
+best_clf_count = 0       # number of such image-bearing subdirs
+best_clf_img_count = 0   # total images across those subdirs (tiebreaker)
+
 for root, dirs, files in os.walk(DATASET_PATH):
     imgs = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
-    if len(imgs) > len(image_files):
-        image_files = [os.path.join(root, f) for f in imgs]
-        img_root = root
+    # Track the flat directory with the most images (fallback)
+    if len(imgs) > best_flat_count:
+        best_flat_count = len(imgs)
+        best_flat_root = root
+
+    # Check if this directory has subdirs that each contain images (class dirs)
+    clf_subs = []
+    clf_total_imgs = 0
+    for d in dirs:
+        sub_path = os.path.join(root, d)
+        try:
+            sub_imgs = [f for f in os.listdir(sub_path)
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
+        except PermissionError:
+            continue
+        if len(sub_imgs) > 0:
+            clf_subs.append(d)
+            clf_total_imgs += len(sub_imgs)
+    # Prefer: (1) more class dirs; (2) more total images as tiebreaker (e.g. TRAIN > TEST_SIMPLE)
+    if len(clf_subs) >= 2 and (
+        len(clf_subs) > best_clf_count or
+        (len(clf_subs) == best_clf_count and clf_total_imgs > best_clf_img_count)
+    ):
+        best_clf_count = len(clf_subs)
+        best_clf_img_count = clf_total_imgs
+        best_clf_root = root
+
+# Prefer ImageFolder-compatible root; fall back to flat directory
+if best_clf_root is not None:
+    img_root = best_clf_root
+    print(f"Found ImageFolder-compatible root with {best_clf_count} class dirs: {img_root}")
+else:
+    img_root = best_flat_root
+    print(f"No class subdirs found; using flat image root: {img_root}")
+
+# Rebuild image_files from the chosen root
+image_files = []
+for root2, _, files2 in os.walk(img_root):
+    for f in files2:
+        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+            image_files.append(os.path.join(root2, f))
 
 class_dirs = [d for d in os.listdir(img_root) if os.path.isdir(os.path.join(img_root, d))]
 
@@ -294,11 +339,14 @@ def reverse_sampler(labels):
     w = w / w.sum() * len(w)
     return WeightedRandomSampler(torch.tensor(w, dtype=torch.float), len(labels), replacement=True)
 
-loader_instance = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=instance_sampler(train_labels), num_workers=NUM_WORKERS)
-loader_median   = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=median_sampler(train_labels), num_workers=NUM_WORKERS)
-loader_reverse  = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=reverse_sampler(train_labels), num_workers=NUM_WORKERS)
-val_loader      = DataLoader(AugmentedSubset(val_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
-test_loader     = DataLoader(AugmentedSubset(test_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+# drop_last=True on training loaders prevents partial final batches from being
+# scattered unevenly across GPUs (DataParallel assertion) and avoids BatchNorm
+# errors with batch_size=1 on very small datasets.
+loader_instance = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=instance_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
+loader_median   = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=median_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
+loader_reverse  = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=reverse_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
+val_loader      = DataLoader(AugmentedSubset(val_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
+test_loader     = DataLoader(AugmentedSubset(test_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
 
 # ── 3. EXACT ARCHITECTURE (STTPNet) ────────────────────────────────────────
 class Encoder(nn.Module):
@@ -525,7 +573,7 @@ def train_epoch(model, opt, use_hm=True, warmup=False):
     it_med = iter(loader_median)
     it_rev = iter(loader_reverse)
 
-    for step, (imgs_i, lbl_i) in enumerate(loader_instance):
+    for step, (imgs_i, lbl_i) in enumerate(tqdm(loader_instance, desc="Training", leave=False)):
         try:    imgs_m, lbl_m = next(it_med)
         except: it_med = iter(loader_median);  imgs_m, lbl_m = next(it_med)
         try:    imgs_r, lbl_r = next(it_rev)
@@ -535,11 +583,12 @@ def train_epoch(model, opt, use_hm=True, warmup=False):
         imgs_m, lbl_m = imgs_m.to(DEVICE), lbl_m.to(DEVICE)
         imgs_r, lbl_r = imgs_r.to(DEVICE), lbl_r.to(DEVICE)
 
-        opt.zero_grad()
+        opt.zero_grad(set_to_none=True)
         imgs_hm = torch.cat([imgs_i, imgs_m])
         lbl_hm  = torch.cat([lbl_i,  lbl_m])
 
-        if warmup:
+        with torch.amp.autocast('cuda', enabled=DEVICE.type == 'cuda'):
+          if warmup:
             # We use the mode 'warmup' to route through DataParallel
             # We pass imgs_r in the labels argument slot to route it through DataParallel together
             _, pre_logits, l1, l2_w = model(imgs_hm, labels=imgs_r, mode='warmup')
@@ -547,7 +596,7 @@ def train_epoch(model, opt, use_hm=True, warmup=False):
             loss_h1 = ebs_fn(l1, lbl_hm)
             loss_h2 = ebs_fn(l2_w, lbl_r)
             loss = loss_h1 + loss_h2 + 0.5 * loss_pre
-        else:
+          else:
             (l1, la_hm, lb_hm, lam_hm, sc_hm, mu_hm, lv_hm, pre_hm, f_recon_hm, f_hm) = model(imgs_hm, labels=lbl_hm, mode='head_median', use_hm=use_hm)
             (l2, la_r, lb_r, lam_r, mu_r, lv_r, pre_r, f_recon_r, f_r) = model(imgs_r, labels=lbl_r, mode='tail', use_hm=use_hm)
 
@@ -570,13 +619,14 @@ def train_epoch(model, opt, use_hm=True, warmup=False):
         torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         opt.step()
         total += loss.item(); n += 1
+    if torch.cuda.is_available(): torch.cuda.empty_cache()
     return total / max(n, 1)
 
 @torch.no_grad()
 def evaluate(model, loader, return_all=False):
     model.eval()
     preds, labels, probs, latents = [], [], [], []
-    for imgs, lbl in loader:
+    for imgs, lbl in tqdm(loader, desc="Evaluating", leave=False):
         imgs = imgs.to(DEVICE)
         logits = model(imgs, mode='inference')
         prob = F.softmax(logits, dim=-1)
@@ -585,11 +635,8 @@ def evaluate(model, loader, return_all=False):
         preds.append(p.cpu()); labels.append(lbl.cpu())
         if return_all:
             probs.append(prob.cpu())
-            if isinstance(model, nn.DataParallel):
-                f = model.module.bottleneck(model.module.encoder(imgs))
-            else:
-                f = model.bottleneck(model.encoder(imgs))
-            latents.append(f.cpu())
+            enc = model.module.encoder if isinstance(model, nn.DataParallel) else model.encoder
+            latents.append(enc(imgs).cpu())
             
     preds  = torch.cat(preds).numpy()
     labels = torch.cat(labels).numpy()
@@ -629,6 +676,11 @@ for epoch in range(1, TOTAL_EPOCHS + 1):
         # Handle DataParallel state dict save correctly
         state_dict = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
         torch.save(state_dict, best_ckpt)
+
+# Free GPU memory before evaluation
+import gc
+gc.collect()
+if torch.cuda.is_available(): torch.cuda.empty_cache()
 
 # ── 5. EVALUATION, METRICS, PUBLICATION FIGURES & STATS ─────────────────────
 import time
@@ -758,8 +810,8 @@ except:
 # ─── GENERATE FIGURES ───
 print("Generating publication quality figures...")
 def save_fig(name):
-    for ext in ['png', 'pdf', 'svg']:
-        plt.savefig(os.path.join(EXP_DIR, 'figures', f'{name}.{ext}'), dpi=300, bbox_inches='tight')
+    # Save PNG only to reduce disk I/O and memory pressure on Kaggle
+    plt.savefig(os.path.join(EXP_DIR, 'figures', f'{name}.png'), dpi=150, bbox_inches='tight')
     plt.close()
 
 # 1. Training Curves
@@ -813,9 +865,9 @@ save_fig('reliability_diagram')
 # 5. UMAP & t-SNE
 print("Generating embeddings...")
 try:
-    if len(test_latents) > 5000:
-        # Subsample for speed
-        idx = np.random.choice(len(test_latents), 5000, replace=False)
+    if len(test_latents) > 2000:
+        # Subsample for speed and to avoid OOM during TSNE/UMAP
+        idx = np.random.choice(len(test_latents), 2000, replace=False)
         l_sub, y_sub = test_latents[idx], test_labels[idx]
     else:
         l_sub, y_sub = test_latents, test_labels
@@ -833,6 +885,10 @@ try:
     save_fig('umap')
 except Exception as e:
     print(f"Embedding visualization failed: {e}")
+finally:
+    del test_latents
+    gc.collect()
+    if torch.cuda.is_available(): torch.cuda.empty_cache()
 
 # ─── STATISTICAL REPORT ───
 report_txt = f"""================================================================================
