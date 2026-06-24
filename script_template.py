@@ -13,6 +13,7 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint  # trades compute for memory
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler, random_split
 from torchvision import transforms, models, datasets
 from sklearn.metrics import (classification_report, confusion_matrix,
@@ -34,7 +35,7 @@ DOWNLOAD_CMD   = """{{DOWNLOAD_CMD}}"""
 NUM_CLASSES    = {{NUM_CLASSES}}
 SEED           = 42
 IMG_SIZE       = 224
-BATCH_SIZE     = 8 * max(1, torch.cuda.device_count())  # Kaggle-safe: 8 per GPU to avoid OOM
+BATCH_SIZE     = 4 * max(1, torch.cuda.device_count())  # 4 per GPU; HybridMix runs encoder 2x per step
 NUM_WORKERS    = 2
 ENCODER_DIM    = 512
 LATENT_DIM     = 128
@@ -342,11 +343,11 @@ def reverse_sampler(labels):
 # drop_last=True on training loaders prevents partial final batches from being
 # scattered unevenly across GPUs (DataParallel assertion) and avoids BatchNorm
 # errors with batch_size=1 on very small datasets.
-loader_instance = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=instance_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
-loader_median   = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=median_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
-loader_reverse  = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=reverse_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
-val_loader      = DataLoader(AugmentedSubset(val_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
-test_loader     = DataLoader(AugmentedSubset(test_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
+loader_instance = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=instance_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=1, persistent_workers=True, drop_last=True)
+loader_median   = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=median_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=1, persistent_workers=True, drop_last=True)
+loader_reverse  = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=reverse_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=1, persistent_workers=True, drop_last=True)
+val_loader      = DataLoader(AugmentedSubset(val_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=1, persistent_workers=True)
+test_loader     = DataLoader(AugmentedSubset(test_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=1, persistent_workers=True)
 
 # ── 3. EXACT ARCHITECTURE (STTPNet) ────────────────────────────────────────
 class Encoder(nn.Module):
@@ -362,7 +363,11 @@ class Encoder(nn.Module):
             nn.Linear(1024, out_dim))
 
     def forward(self, x):
-        return self.proj(self.backbone(x))
+        # Gradient checkpointing: recompute backbone activations during backward
+        # instead of storing them — ~50% less GPU RAM at ~30% more compute cost.
+        # Critical for HybridMix which calls encoder twice per step.
+        feat = grad_checkpoint(self.backbone, x, use_reentrant=False)
+        return self.proj(feat)
 
 class CVAE(nn.Module):
     def __init__(self, feat_dim=ENCODER_DIM, lat_dim=LATENT_DIM, nc=NUM_CLASSES):

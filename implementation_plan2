@@ -1,0 +1,103 @@
+# Audit & Fix All 40 Dataset Scripts
+
+Systematic review of each script to verify: dataset source, download method, folder structure alignment, and code correctness.
+
+## Approach
+
+I will iterate through all 40 scripts in order, and for each one:
+1. **Identify the dataset source** — Kaggle URL / slug, competition vs dataset, or manual download
+2. **Verify the download method** — Is the `DOWNLOAD_CMD` / `kagglehub` approach correct?
+3. **Check folder structure alignment** — Does the data loader correctly handle the actual folder structure of the downloaded dataset?
+4. **Find bugs/errors** — Code issues, missing imports, wrong column names, path mismatches, etc.
+
+## Script Categories
+
+After initial analysis, the 40 scripts fall into **two categories**:
+
+### Category A: Custom Data Loaders (dataset-specific file/column handling)
+These scripts have been customized with dataset-specific logic (CSV column names, image directories, etc.):
+- `run_ham10000.py`, `run_isic_2019.py`, `run_aptos_2019.py`, and others
+
+### Category B: Generic Template (auto-discovery walker)
+These scripts still use the generic `os.walk`-based auto-discovery logic from the template:
+- `run_blood_cell_detection.py`, `run_brats_2020.py`, `run_busi.py`, and others
+
+---
+
+## Proposed Plan
+
+I will create a comprehensive audit report artifact (`dataset_audit.md`) that documents findings for **every single script** — organized as a table + detailed per-script sections.
+
+For each script, I will:
+1. Read the data loading section (lines 64–280 approx)
+2. Research the actual Kaggle/source dataset structure 
+3. Compare the script's expected structure vs actual structure
+4. Identify bugs, errors, and misalignments
+5. Document fixes needed
+
+> [!IMPORTANT]
+> This is a **read-only audit** phase. I will NOT modify any scripts until you review the audit report and approve which fixes to apply.
+
+## Execution Order (1–40)
+
+| # | Script | Dataset | Source |
+|---|--------|---------|--------|
+| 1 | `run_ham10000.py` | HAM10000 | Kaggle `kmader/skin-cancer-mnist-ham10000` |
+| 2 | `run_isic_2019.py` | ISIC 2019 | Kaggle `nodoubttome/isic-2019` |
+| 3 | `run_isic_2020.py` | ISIC 2020 | Kaggle `cdeotte/jpeg-melanoma-256x256` |
+| 4 | `run_pad_ufes_20.py` | PAD-UFES-20 | Mendeley |
+| 5 | `run_ddi.py` | DDI | Manual |
+| 6 | `run_chestx_ray14.py` | ChestX-ray14 | Kaggle `nih-chest-xrays/data` |
+| 7 | `run_chexpert.py` | CheXpert | Stanford (Manual) |
+| 8 | `run_covid_19_radiography.py` | COVID-19 Radiography | Kaggle |
+| 9 | `run_rsna_pneumonia.py` | RSNA Pneumonia | Kaggle Competition |
+| 10 | `run_bimcv_covid19.py` | BIMCV COVID-19 | Manual |
+| 11 | `run_tb_chest_xray.py` | TB Chest X-ray | Kaggle |
+| 12 | `run_mimic_cxr.py` | MIMIC-CXR | PhysioNet (Manual) |
+| 13 | `run_vindr_cxr.py` | VinDr-CXR | Kaggle Competition |
+| 14 | `run_breakhis.py` | BreakHis | Kaggle |
+| 15 | `run_pcam.py` | PCam | Kaggle Competition |
+| 16 | `run_nct_crc_he_100k.py` | NCT-CRC-HE-100K | Kaggle |
+| 17 | `run_camelyon16.py` | Camelyon16 | Manual |
+| 18 | `run_camelyon17.py` | Camelyon17 | Manual |
+| 19 | `run_panda_challenge.py` | PANDA Challenge | Kaggle Competition |
+| 20 | `run_aptos_2019.py` | APTOS 2019 | Kaggle Competition |
+| 21 | `run_eyepacs.py` | EyePACS | Kaggle Competition |
+| 22 | `run_messidor_2.py` | MESSIDOR-2 | Manual |
+| 23 | `run_stare.py` | STARE | Manual |
+| 24 | `run_idrid.py` | IDRiD | Manual |
+| 25 | `run_odir_5k.py` | ODIR-5K | Kaggle |
+| 26 | `run_brats_2020.py` | BraTS 2020 | Kaggle |
+| 27 | `run_oasis.py` | OASIS | Kaggle |
+| 28 | `run_fastmri_knee.py` | FastMRI Knee | Manual |
+| 29 | `run_ct_medical_images.py` | CT Medical Images | Kaggle |
+| 30 | `run_lidc_idri.py` | LIDC-IDRI | Manual |
+| 31 | `run_rsna_intracranial.py` | RSNA Intracranial | Kaggle Competition |
+| 32 | `run_kvasir.py` | Kvasir | Kaggle |
+| 33 | `run_hyperkvasir.py` | HyperKvasir | Simula (wget) |
+| 34 | `run_busi.py` | BUSI | Kaggle |
+| 35 | `run_cervical_cancer_intel.py` | Cervical Cancer Intel | Kaggle Competition |
+| 36 | `run_polypgen.py` | PolypGen | Kaggle |
+| 37 | `run_blood_cell_detection.py` | Blood Cell Detection | Kaggle |
+| 38 | `run_malaria_cell.py` | Malaria Cell | Kaggle |
+| 39 | `run_bone_age_rsna.py` | Bone Age RSNA | Kaggle |
+| 40 | `run_mura.py` | MURA | Stanford (Manual) |
+
+## Verification Plan
+
+### Automated
+- For each script, check that `DATASET_HANDLE`, `IS_COMPETITION`, `DOWNLOAD_CMD`, `NUM_CLASSES`, and `DATASET_SLUG` are correct
+- Verify CSV column names match actual dataset files
+- Check image path construction logic
+
+### Manual
+- You will review the audit report and approve fixes before I modify any scripts
+
+## Open Questions
+
+> [!IMPORTANT]
+> **Are these scripts intended to run on Kaggle notebooks only, or also locally?**
+> The "Category A" scripts (custom loaders) have a Kaggle-only download path with no local fallback, while "Category B" scripts have both. Should I standardize them?
+
+> [!IMPORTANT]
+> **For non-Kaggle datasets (Manual Download Required — e.g., CheXpert, MIMIC-CXR, Camelyon16/17, STARE, FastMRI), should I just verify the data loading logic is correct, or do you want me to add alternative download mechanisms?**

@@ -13,6 +13,7 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint  # trades compute for memory
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler, random_split
 from torchvision import transforms, models, datasets
 from sklearn.metrics import (classification_report, confusion_matrix,
@@ -108,6 +109,61 @@ if not DATASET_PATH:
         sys.exit(1)
 
 print(f"DATASET_PATH = {DATASET_PATH}")
+# ── EARLY FORMAT VALIDATION CHECK ───────────────────────────────────────────
+unsupported_formats = {
+    '.dcm': 'DICOM', '.dicom': 'DICOM',
+    '.nii': 'NIfTI 3D', '.nii.gz': 'NIfTI 3D',
+    '.h5': 'HDF5 MRI', '.hdf5': 'HDF5 MRI',
+    '.tif': 'Whole Slide Image (WSI)', '.tiff': 'Whole Slide Image (WSI)',
+    '.svs': 'Whole Slide Image (WSI)', '.ndpi': 'Whole Slide Image (WSI)'
+}
+
+found_format = None
+has_standard_images = False
+
+for root, _, files_in_dir in os.walk(DATASET_PATH):
+    for f in files_in_dir:
+        name_lower = f.lower()
+        if name_lower.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+            has_standard_images = True
+        
+        ext = None
+        if name_lower.endswith('.nii.gz'):
+            ext = '.nii.gz'
+        else:
+            ext = os.path.splitext(name_lower)[1]
+            
+        if ext in unsupported_formats:
+            found_format = unsupported_formats[ext]
+
+if not has_standard_images and found_format:
+    print("\n" + "!"*80)
+    print(f"ERROR: Raw {found_format} files detected in {DATASET_PATH}!")
+    print("This classification pipeline requires preprocessed 2D PNG/JPG/BMP images.")
+    print("!"*80)
+    if found_format == 'DICOM':
+        print("\n>>> PREPROCESSING REQUIRED <<<")
+        print("1. Convert raw 2D DICOM (.dcm) pixel arrays to 8-bit grayscale images.")
+        print("2. Organize them into class subfolders (e.g. benign/malignant or normal/abnormal).")
+        print("3. Point the dataset path to the preprocessed directory containing class subfolders.")
+    elif found_format == 'NIfTI 3D':
+        print("\n>>> PREPROCESSING REQUIRED <<<")
+        print("1. Load 3D NIfTI volumes (.nii/.nii.gz) using nibabel.")
+        print("2. Extract 2D slices along the axial/sagittal/coronal planes.")
+        print("3. Normalize and save the slices as PNG/JPG files organized into class subfolders.")
+    elif found_format == 'HDF5 MRI':
+        print("\n>>> PREPROCESSING REQUIRED <<<")
+        print("1. Read HDF5 (.h5) files using h5py.")
+        print("2. Extract reconstructed 2D slices or process k-space data.")
+        print("3. Save the resulting 2D slices as PNG/JPG files organized into class subfolders.")
+    elif found_format == 'Whole Slide Image (WSI)':
+        print("\n>>> PREPROCESSING REQUIRED <<<")
+        print("1. Open Whole Slide Images (.tif/.tiff/.svs) using OpenSlide or pyvips.")
+        print("2. Extract tiles/patches (e.g., 224x224 pixels) at desired magnification levels.")
+        print("3. Save patches as standard PNG/JPG files sorted into class subfolders under the dataset root.")
+    print("!"*80 + "\n")
+    sys.exit(1)
+
 print(f"Contents: {os.listdir(DATASET_PATH)[:20]}")
 
 # ── 2. DATA LOADING & SAMPLING ─────────────────────────────────────────────
@@ -299,7 +355,11 @@ class Encoder(nn.Module):
             nn.Linear(1024, out_dim))
 
     def forward(self, x):
-        return self.proj(self.backbone(x))
+        # Gradient checkpointing: recompute backbone activations during backward
+        # instead of storing them — ~50% less GPU RAM at ~30% more compute cost.
+        # Critical for HybridMix which calls encoder twice per step.
+        feat = grad_checkpoint(self.backbone, x, use_reentrant=False)
+        return self.proj(feat)
 
 class CVAE(nn.Module):
     def __init__(self, feat_dim=ENCODER_DIM, lat_dim=LATENT_DIM, nc=NUM_CLASSES):
@@ -504,11 +564,13 @@ ebs_fn  = EBSLoss(class_counts).to(DEVICE)
 sup_con = SupConLoss().to(DEVICE)
 
 # ── 4. TRAINING LOOP ───────────────────────────────────────────────────────
-def train_epoch(model, opt, use_hm=True, warmup=False):
+def train_epoch(model, opt, use_hm=True, warmup=False, epoch=0, total_epochs=0, phase=''):
     model.train()
     total, n = 0.0, 0
     it_med = iter(loader_median)
     it_rev = iter(loader_reverse)
+    num_steps = len(loader_instance)
+    print_every = max(1, num_steps // 10)  # ~10 progress lines per epoch
 
     for step, (imgs_i, lbl_i) in enumerate(loader_instance):
         try:    imgs_m, lbl_m = next(it_med)
@@ -556,6 +618,10 @@ def train_epoch(model, opt, use_hm=True, warmup=False):
         torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         opt.step()
         total += loss.item(); n += 1
+        if (step + 1) % print_every == 0 or (step + 1) == num_steps:
+            print(f'  [{phase:10s}] Ep {epoch:03d}/{total_epochs}'
+                  f'  step {step+1:>{len(str(num_steps))}}/{num_steps}'
+                  f'  loss={loss.item():.4f}  avg={total/n:.4f}', flush=True)
     if torch.cuda.is_available(): torch.cuda.empty_cache()
     return total / max(n, 1)
 
@@ -597,7 +663,9 @@ for epoch in range(1, TOTAL_EPOCHS + 1):
     elif epoch <= EPOCHS_WARMUP + EPOCHS_PHASE1: phase, warmup, use_hm = 'HybridMix',  False, True
     else: phase, warmup, use_hm = 'Refinement', False, False
 
-    loss = train_epoch(model, optimizer, use_hm=use_hm, warmup=warmup)
+    loss = train_epoch(model, optimizer, use_hm=use_hm, warmup=warmup,
+
+                       epoch=epoch, total_epochs=TOTAL_EPOCHS, phase=phase)
     acc, bal, _, _ = evaluate(model, val_loader)
     scheduler.step()
 
