@@ -133,14 +133,15 @@ if not DATASET_PATH:
 # Based on official Kaggle dataset structure (nodoubttome/isic-2019)
 # =============================================================================
 print("--- Initializing Custom ISIC 2019 DataLoader ---")
-img_dir = os.path.join(DATASET_PATH, "ISIC_2019_Training_Input", "ISIC_2019_Training_Input")
-if not os.path.exists(img_dir):
-    # Fallback to base path if unzipped flat
-    img_dir = DATASET_PATH
+meta_csv = None
+for root, _, files in os.walk(DATASET_PATH):
+    for f in files:
+        if f == "ISIC_2019_Training_GroundTruth.csv":
+            meta_csv = os.path.join(root, f)
+            break
 
-meta_csv = os.path.join(DATASET_PATH, "ISIC_2019_Training_GroundTruth.csv")
-if not os.path.exists(meta_csv):
-    print(f"ERROR: Could not find official ISIC_2019_Training_GroundTruth.csv at {meta_csv}")
+if not meta_csv:
+    print("ERROR: Could not find official ISIC_2019_Training_GroundTruth.csv")
     sys.exit(1)
 
 print(f"Reading Official Metadata from {meta_csv}")
@@ -152,12 +153,18 @@ CLASS_NAMES = official_classes
 NUM_CLASSES = len(CLASS_NAMES)
 label2idx = {cls: idx for idx, cls in enumerate(official_classes)}
 
+# Map images recursively
+image_files = {}
+for root, _, files in os.walk(DATASET_PATH):
+    for f in files:
+        if f.lower().endswith('.jpg'):
+            image_files[os.path.splitext(f)[0]] = os.path.join(root, f)
+
 # Parse one-hot encoded ground truth
 items = []
 missing = 0
 for _, row in df.iterrows():
     img_id = str(row['image'])
-    img_path = os.path.join(img_dir, f"{img_id}.jpg")
     
     # Find active class
     active_cls = None
@@ -166,11 +173,10 @@ for _, row in df.iterrows():
             active_cls = cls
             break
             
-    if active_cls is None or not os.path.exists(img_path):
+    if active_cls is not None and img_id in image_files:
+        items.append((image_files[img_id], label2idx[active_cls]))
+    else:
         missing += 1
-        continue
-        
-    items.append((img_path, label2idx[active_cls]))
 
 if missing > 0:
     print(f"Warning: {missing} images missing from directory or missing valid official labels.")
@@ -254,9 +260,9 @@ def reverse_sampler(labels):
     w = w / w.sum() * len(w)
     return WeightedRandomSampler(torch.tensor(w, dtype=torch.float), len(labels), replacement=True)
 
-loader_instance = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=instance_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
-loader_median   = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=median_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
-loader_reverse  = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=reverse_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
+loader_instance = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=instance_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
+loader_median   = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=median_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
+loader_reverse  = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=reverse_sampler(train_labels), num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True, drop_last=True)
 val_loader      = DataLoader(AugmentedSubset(val_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
 test_loader     = DataLoader(AugmentedSubset(test_ds, transform=eval_transform), batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=2, persistent_workers=True)
 
